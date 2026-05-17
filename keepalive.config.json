@@ -1,6 +1,6 @@
 {
   "urls": [
-    "https://ghcodes.streamlit.app/",
+    "https://ghcodes.streamlit.app",
     "https://yanghuangshi.streamlit.app"
   ],
   "intervalMinutes": 15,
