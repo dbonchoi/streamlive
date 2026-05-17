@@ -12,7 +12,7 @@ Edit `keepalive.config.json`:
     "https://app-one.streamlit.app",
     "https://app-two.streamlit.app"
   ],
-  "intervalMinutes": 5,
+  "intervalMinutes": 15,
   "jitterMinutes": 3,
   "holdSeconds": 30,
   "timeoutSeconds": 120,
@@ -22,7 +22,7 @@ Edit `keepalive.config.json`:
 }
 ```
 
-The GitHub workflow runs every 5 minutes. The script then waits a random `0-jitterMinutes` delay before opening every configured URL.
+The GitHub workflow runs every 15 minutes. The script then waits a random `0-jitterMinutes` delay before opening every configured URL.
 
 ## GitHub variables
 
