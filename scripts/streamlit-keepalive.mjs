@@ -10,9 +10,13 @@ const DEFAULT_CONFIG = {
   jitterMinutes: 3,
   holdSeconds: 30,
   timeoutSeconds: 120,
+  wakeTimeoutSeconds: 300,
+  wakeProbeSeconds: 8,
   perUrlDelaySeconds: 0,
   waitUntil: 'domcontentloaded',
   selector: '[data-testid="stApp"]',
+  wakeSleepingApps: true,
+  wakeButtonText: 'get this app back up',
   headless: true,
   randomizeUrlOrder: false,
   failOnError: true,
@@ -33,8 +37,12 @@ Options:
   --jitter-minutes <number>        Random delay in minutes, 0 disables it (default: 3)
   --hold-seconds <number>          Time to keep each page open after load (default: 30)
   --timeout-seconds <number>       Per navigation/selector timeout (default: 120)
+  --wake-timeout-seconds <number>  Timeout after clicking Streamlit wake button (default: 300)
+  --wake-probe-seconds <number>    Time to look for the Streamlit wake button (default: 8)
   --per-url-delay-seconds <number> Delay between URLs in one round
   --selector <css>                 Selector to wait for; use empty string to disable
+  --wake-button-text <text>        Streamlit sleep-page wake button text
+  --no-wake-sleeping-apps          Do not click the Streamlit sleep-page wake button
   --wait-until <state>             load, domcontentloaded, networkidle, or commit
   --headful                        Launch Chromium with UI
   --randomize-url-order            Shuffle URL order each round
@@ -95,11 +103,26 @@ function parseArgs(argv) {
       case '--timeout-seconds':
         parsed.timeoutSeconds = parseNumberOption(name, value());
         break;
+      case '--wake-timeout-seconds':
+        parsed.wakeTimeoutSeconds = parseNumberOption(name, value());
+        break;
+      case '--wake-probe-seconds':
+        parsed.wakeProbeSeconds = parseNumberOption(name, value());
+        break;
       case '--per-url-delay-seconds':
         parsed.perUrlDelaySeconds = parseNumberOption(name, value());
         break;
       case '--selector':
         parsed.selector = value();
+        break;
+      case '--wake-button-text':
+        parsed.wakeButtonText = value();
+        break;
+      case '--wake-sleeping-apps':
+        parsed.wakeSleepingApps = true;
+        break;
+      case '--no-wake-sleeping-apps':
+        parsed.wakeSleepingApps = false;
         break;
       case '--wait-until':
         parsed.waitUntil = value();
@@ -185,6 +208,12 @@ function readEnvConfig(env) {
   if (env.KEEPALIVE_TIMEOUT_SECONDS) {
     config.timeoutSeconds = parseNumberOption('KEEPALIVE_TIMEOUT_SECONDS', env.KEEPALIVE_TIMEOUT_SECONDS);
   }
+  if (env.KEEPALIVE_WAKE_TIMEOUT_SECONDS) {
+    config.wakeTimeoutSeconds = parseNumberOption('KEEPALIVE_WAKE_TIMEOUT_SECONDS', env.KEEPALIVE_WAKE_TIMEOUT_SECONDS);
+  }
+  if (env.KEEPALIVE_WAKE_PROBE_SECONDS) {
+    config.wakeProbeSeconds = parseNumberOption('KEEPALIVE_WAKE_PROBE_SECONDS', env.KEEPALIVE_WAKE_PROBE_SECONDS);
+  }
   if (env.KEEPALIVE_PER_URL_DELAY_SECONDS) {
     config.perUrlDelaySeconds = parseNumberOption('KEEPALIVE_PER_URL_DELAY_SECONDS', env.KEEPALIVE_PER_URL_DELAY_SECONDS);
   }
@@ -193,6 +222,12 @@ function readEnvConfig(env) {
   }
   if (env.KEEPALIVE_SELECTOR !== undefined) {
     config.selector = env.KEEPALIVE_SELECTOR;
+  }
+  if (env.KEEPALIVE_WAKE_BUTTON_TEXT !== undefined) {
+    config.wakeButtonText = env.KEEPALIVE_WAKE_BUTTON_TEXT;
+  }
+  if (env.KEEPALIVE_WAKE_SLEEPING_APPS !== undefined) {
+    config.wakeSleepingApps = parseBooleanOption('KEEPALIVE_WAKE_SLEEPING_APPS', env.KEEPALIVE_WAKE_SLEEPING_APPS);
   }
   if (env.KEEPALIVE_HEADLESS !== undefined) {
     config.headless = parseBooleanOption('KEEPALIVE_HEADLESS', env.KEEPALIVE_HEADLESS);
@@ -240,7 +275,7 @@ function normalizeConfig(config) {
     throw new Error(`waitUntil must be one of: ${[...VALID_WAIT_UNTIL].join(', ')}`);
   }
 
-  for (const key of ['intervalMinutes', 'jitterMinutes', 'holdSeconds', 'timeoutSeconds', 'perUrlDelaySeconds']) {
+  for (const key of ['intervalMinutes', 'jitterMinutes', 'holdSeconds', 'timeoutSeconds', 'wakeTimeoutSeconds', 'wakeProbeSeconds', 'perUrlDelaySeconds']) {
     if (!Number.isFinite(Number(normalized[key])) || Number(normalized[key]) < 0) {
       throw new Error(`${key} must be a non-negative number`);
     }
@@ -248,6 +283,8 @@ function normalizeConfig(config) {
   }
 
   normalized.selector = normalized.selector === undefined ? DEFAULT_CONFIG.selector : String(normalized.selector);
+  normalized.wakeButtonText = normalized.wakeButtonText === undefined ? DEFAULT_CONFIG.wakeButtonText : String(normalized.wakeButtonText);
+  normalized.wakeSleepingApps = Boolean(normalized.wakeSleepingApps);
   normalized.headless = Boolean(normalized.headless);
   normalized.randomizeUrlOrder = Boolean(normalized.randomizeUrlOrder);
   normalized.failOnError = Boolean(normalized.failOnError);
@@ -266,6 +303,10 @@ function validateHttpUrl(rawUrl) {
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error(`URL must use http or https: ${rawUrl}`);
   }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function shuffle(values) {
@@ -296,8 +337,34 @@ async function sleepWithLog(label, ms) {
   await sleep(ms);
 }
 
+async function clickWakeButtonIfPresent(page, rawUrl, config, index, total) {
+  if (!config.wakeSleepingApps || !config.wakeButtonText || config.wakeProbeSeconds <= 0) {
+    return false;
+  }
+
+  const wakeButton = page.getByRole('button', {
+    name: new RegExp(escapeRegExp(config.wakeButtonText), 'i')
+  }).first();
+
+  try {
+    await wakeButton.waitFor({
+      state: 'visible',
+      timeout: config.wakeProbeSeconds * 1000
+    });
+  } catch {
+    return false;
+  }
+
+  console.log(`[${index}/${total}] wake sleeping app ${rawUrl}`);
+  await wakeButton.click({
+    timeout: Math.min(config.timeoutSeconds, config.wakeTimeoutSeconds) * 1000
+  });
+  return true;
+}
+
 async function visitUrl(browser, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
+  const wakeTimeoutMs = config.wakeTimeoutSeconds * 1000;
   const page = await browser.newPage();
   const startedAt = Date.now();
 
@@ -311,10 +378,12 @@ async function visitUrl(browser, rawUrl, config, index, total) {
       timeout: timeoutMs
     });
 
+    const wokeSleepingApp = await clickWakeButtonIfPresent(page, rawUrl, config, index, total);
+
     if (config.selector) {
       await page.waitForSelector(config.selector, {
         state: 'attached',
-        timeout: timeoutMs
+        timeout: wokeSleepingApp ? wakeTimeoutMs : timeoutMs
       });
     }
 
@@ -370,7 +439,7 @@ async function main() {
   });
 
   console.log(`configured URLs: ${config.urls.length}`);
-  console.log(`timing: interval=${config.intervalMinutes}m jitter=0-${config.jitterMinutes}m hold=${config.holdSeconds}s timeout=${config.timeoutSeconds}s`);
+  console.log(`timing: interval=${config.intervalMinutes}m jitter=0-${config.jitterMinutes}m hold=${config.holdSeconds}s timeout=${config.timeoutSeconds}s wakeTimeout=${config.wakeTimeoutSeconds}s`);
 
   if (!config.loop) {
     await sleepWithLog('startup jitter', randomDelayMs(config.jitterMinutes));
