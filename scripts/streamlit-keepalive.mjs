@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   wakeProbeSeconds: 8,
   perUrlDelaySeconds: 0,
   waitUntil: 'domcontentloaded',
-  selector: '[data-testid="stApp"]',
+  selector: '[data-testid="stApp"], [data-testid="stAppViewContainer"], .stApp',
   wakeSleepingApps: true,
   wakeButtonText: 'get this app back up',
   headless: true,
@@ -309,6 +309,10 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isTimeoutError(error) {
+  return error?.name === 'TimeoutError' || String(error?.message ?? '').includes('Timeout');
+}
+
 function shuffle(values) {
   const result = [...values];
   for (let index = result.length - 1; index > 0; index -= 1) {
@@ -337,19 +341,26 @@ async function sleepWithLog(label, ms) {
   await sleep(ms);
 }
 
-async function clickWakeButtonIfPresent(page, rawUrl, config, index, total) {
+function getWakeButtonLocator(page, config) {
+  const wakeButtonPattern = new RegExp(escapeRegExp(config.wakeButtonText), 'i');
+  const roleButton = page.getByRole('button', { name: wakeButtonPattern });
+  const textButton = page.locator('button').filter({ hasText: wakeButtonPattern });
+  const roleTextButton = page.locator('[role="button"]').filter({ hasText: wakeButtonPattern });
+
+  return roleButton.or(textButton).or(roleTextButton).first();
+}
+
+async function clickWakeButtonIfPresent(page, rawUrl, config, index, total, probeTimeoutMs = config.wakeProbeSeconds * 1000) {
   if (!config.wakeSleepingApps || !config.wakeButtonText || config.wakeProbeSeconds <= 0) {
     return false;
   }
 
-  const wakeButton = page.getByRole('button', {
-    name: new RegExp(escapeRegExp(config.wakeButtonText), 'i')
-  }).first();
+  const wakeButton = getWakeButtonLocator(page, config);
 
   try {
     await wakeButton.waitFor({
       state: 'visible',
-      timeout: config.wakeProbeSeconds * 1000
+      timeout: probeTimeoutMs
     });
   } catch {
     return false;
@@ -362,9 +373,54 @@ async function clickWakeButtonIfPresent(page, rawUrl, config, index, total) {
   return true;
 }
 
-async function visitUrl(browser, rawUrl, config, index, total) {
+async function waitForAppSelector(page, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
   const wakeTimeoutMs = config.wakeTimeoutSeconds * 1000;
+  let wokeSleepingApp = await clickWakeButtonIfPresent(page, rawUrl, config, index, total);
+  let deadline = Date.now() + (wokeSleepingApp ? wakeTimeoutMs : timeoutMs);
+
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    const selectorProbeMs = Math.min(remainingMs, 5000);
+
+    try {
+      await page.waitForSelector(config.selector, {
+        state: 'attached',
+        timeout: selectorProbeMs
+      });
+      return wokeSleepingApp;
+    } catch (error) {
+      if (!isTimeoutError(error)) {
+        throw error;
+      }
+    }
+
+    const remainingAfterSelectorMs = deadline - Date.now();
+    if (remainingAfterSelectorMs <= 0) {
+      break;
+    }
+
+    const clickedWakeButton = await clickWakeButtonIfPresent(
+      page,
+      rawUrl,
+      config,
+      index,
+      total,
+      Math.min(remainingAfterSelectorMs, config.wakeProbeSeconds * 1000)
+    );
+
+    if (clickedWakeButton) {
+      wokeSleepingApp = true;
+      deadline = Date.now() + wakeTimeoutMs;
+    }
+  }
+
+  const title = await page.title().catch(() => '');
+  throw new Error(`Timed out waiting for ${config.selector} at ${page.url()}${title ? ` (title: ${title})` : ''}`);
+}
+
+async function visitUrl(browser, rawUrl, config, index, total) {
+  const timeoutMs = config.timeoutSeconds * 1000;
   const page = await browser.newPage();
   const startedAt = Date.now();
 
@@ -378,13 +434,8 @@ async function visitUrl(browser, rawUrl, config, index, total) {
       timeout: timeoutMs
     });
 
-    const wokeSleepingApp = await clickWakeButtonIfPresent(page, rawUrl, config, index, total);
-
     if (config.selector) {
-      await page.waitForSelector(config.selector, {
-        state: 'attached',
-        timeout: wokeSleepingApp ? wakeTimeoutMs : timeoutMs
-      });
+      await waitForAppSelector(page, rawUrl, config, index, total);
     }
 
     await sleepWithLog(`[${index}/${total}] hold ${rawUrl}`, config.holdSeconds * 1000);

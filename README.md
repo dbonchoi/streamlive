@@ -20,13 +20,13 @@ Edit `keepalive.config.json`:
   "wakeProbeSeconds": 8,
   "perUrlDelaySeconds": 3,
   "waitUntil": "domcontentloaded",
-  "selector": "[data-testid=\"stApp\"]",
+  "selector": "[data-testid=\"stApp\"], [data-testid=\"stAppViewContainer\"], .stApp",
   "wakeSleepingApps": true,
   "wakeButtonText": "get this app back up"
 }
 ```
 
-The GitHub workflow runs every 15 minutes. The script then waits a random `0-jitterMinutes` delay before opening every configured URL. If Streamlit shows its sleep page, the script clicks the wake button and waits up to `wakeTimeoutSeconds` for the app to render.
+The GitHub workflow follows the cron in `.github/workflows/keepalive.yml`. Each run waits a random `0-jitterMinutes` delay before opening every configured URL. If Streamlit shows its sleep page, the script keeps checking for the wake button, clicks it, and waits up to `wakeTimeoutSeconds` for the app to render.
 
 To change the base GitHub interval, edit the cron in `.github/workflows/keepalive.yml`.
 
