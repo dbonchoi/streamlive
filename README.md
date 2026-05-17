@@ -24,21 +24,9 @@ Edit `keepalive.config.json`:
 
 The GitHub workflow runs every 15 minutes. The script then waits a random `0-jitterMinutes` delay before opening every configured URL.
 
-## GitHub variables
-
-You can override selected values without editing the file by adding repository variables:
-
-```text
-KEEPALIVE_URLS=https://app-one.streamlit.app,https://app-two.streamlit.app
-KEEPALIVE_JITTER_MINUTES=3
-KEEPALIVE_HOLD_SECONDS=30
-KEEPALIVE_TIMEOUT_SECONDS=120
-KEEPALIVE_PER_URL_DELAY_SECONDS=3
-```
-
 To change the base GitHub interval, edit the cron in `.github/workflows/keepalive.yml`.
 
-Manual `workflow_dispatch` runs can pass a comma/newline separated `urls` input, which overrides the config file for that run.
+Manual `workflow_dispatch` runs can pass a comma/newline separated `urls` input, which overrides only the URL list for that run. Scheduled runs use `keepalive.config.json`.
 
 ## Local run
 

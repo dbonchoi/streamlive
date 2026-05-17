@@ -43,9 +43,10 @@ jobs:
       - name: Run keepalive
         env:
           KEEPALIVE_CONFIG: keepalive.config.json
-          KEEPALIVE_URLS: ${{ github.event.inputs.urls || vars.KEEPALIVE_URLS }}
-          KEEPALIVE_JITTER_MINUTES: ${{ vars.KEEPALIVE_JITTER_MINUTES || '3' }}
-          KEEPALIVE_HOLD_SECONDS: ${{ vars.KEEPALIVE_HOLD_SECONDS || '30' }}
-          KEEPALIVE_TIMEOUT_SECONDS: ${{ vars.KEEPALIVE_TIMEOUT_SECONDS || '120' }}
-          KEEPALIVE_PER_URL_DELAY_SECONDS: ${{ vars.KEEPALIVE_PER_URL_DELAY_SECONDS || '3' }}
-        run: npm run keepalive
+          DISPATCH_URLS: ${{ github.event.inputs.urls || '' }}
+        run: |
+          if [ -n "$DISPATCH_URLS" ]; then
+            npm run keepalive -- --urls "$DISPATCH_URLS"
+          else
+            npm run keepalive
+          fi
