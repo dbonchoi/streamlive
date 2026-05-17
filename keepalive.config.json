@@ -11,7 +11,7 @@
   "wakeProbeSeconds": 8,
   "perUrlDelaySeconds": 5,
   "waitUntil": "domcontentloaded",
-  "selector": "[data-testid=\"stApp\"], [data-testid=\"stAppViewContainer\"], .stApp",
+  "selector": "[data-testid=\"stApp\"], [data-testid=\"stAppViewContainer\"], [data-testid=\"stTextInputRootElement\"], .stApp",
   "wakeSleepingApps": true,
   "wakeButtonText": "get this app back up",
   "headless": true,
