@@ -1,0 +1,16 @@
+{
+  "urls": [
+    "https://your-app.streamlit.app",
+    "https://yanghuangshi.streamlit.app"
+  ],
+  "intervalMinutes": 15,
+  "jitterMinutes": 3,
+  "holdSeconds": 60,
+  "timeoutSeconds": 120,
+  "perUrlDelaySeconds": 5,
+  "waitUntil": "domcontentloaded",
+  "selector": "[data-testid=\"stApp\"]",
+  "headless": true,
+  "randomizeUrlOrder": false,
+  "failOnError": true
+}

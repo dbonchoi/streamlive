@@ -1,0 +1,16 @@
+{
+  "name": "streamlit-keepalive",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "keepalive": "node scripts/streamlit-keepalive.mjs",
+    "keepalive:loop": "node scripts/streamlit-keepalive.mjs --loop"
+  },
+  "dependencies": {
+    "playwright": "^1.53.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,51 @@
+name: Streamlit Keepalive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Optional comma/newline separated URLs. Overrides keepalive.config.json for this run.'
+        required: false
+        type: string
+
+concurrency:
+  group: streamlit-keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --no-package-lock
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
+
+      - name: Install Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run keepalive
+        env:
+          KEEPALIVE_CONFIG: keepalive.config.json
+          KEEPALIVE_URLS: ${{ github.event.inputs.urls || vars.KEEPALIVE_URLS }}
+          KEEPALIVE_JITTER_MINUTES: ${{ vars.KEEPALIVE_JITTER_MINUTES || '3' }}
+          KEEPALIVE_HOLD_SECONDS: ${{ vars.KEEPALIVE_HOLD_SECONDS || '30' }}
+          KEEPALIVE_TIMEOUT_SECONDS: ${{ vars.KEEPALIVE_TIMEOUT_SECONDS || '120' }}
+          KEEPALIVE_PER_URL_DELAY_SECONDS: ${{ vars.KEEPALIVE_PER_URL_DELAY_SECONDS || '3' }}
+        run: npm run keepalive
