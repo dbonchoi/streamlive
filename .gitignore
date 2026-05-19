@@ -33,3 +33,6 @@ test-results/
 # daemon runtime files
 keepalive.pid
 keepalive.log
+
+# temp files
+preview.png
