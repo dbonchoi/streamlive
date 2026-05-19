@@ -6,7 +6,8 @@
   "scripts": {
     "keepalive": "node scripts/streamlit-keepalive.mjs",
     "keepalive:loop": "node scripts/streamlit-keepalive.mjs --loop",
-    "keepalive:daemon": "node scripts/streamlit-keepalive.mjs --loop --pid-file keepalive.pid --log-file keepalive.log"
+    "keepalive:daemon": "node scripts/streamlit-keepalive.mjs --loop --pid-file keepalive.pid --log-file keepalive.log",
+    "serve": "node scripts/serve.mjs"
   },
   "dependencies": {
     "playwright": "^1.53.0"

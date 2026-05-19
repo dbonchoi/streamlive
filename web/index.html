@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Streamlit Keepalive</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --red:    #ff4b4b;
+      --dark:   #0e1117;
+      --card:   #1a1d27;
+      --border: #2a2d3a;
+      --text:   #e0e0e0;
+      --muted:  #7a7f9a;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--dark);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── background grid ── */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,75,75,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,75,75,.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── glow blob ── */
+    body::after {
+      content: "";
+      position: fixed;
+      top: -20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 700px;
+      height: 500px;
+      background: radial-gradient(ellipse, rgba(255,75,75,.12) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    header {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 20px 40px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: var(--red);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    header span {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .3px;
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 24px;
+      text-align: center;
+    }
+
+    /* ── illustration ── */
+    .illustration {
+      width: 220px;
+      height: 160px;
+      margin-bottom: 48px;
+    }
+
+    /* ── badge ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,75,75,.12);
+      border: 1px solid rgba(255,75,75,.3);
+      color: var(--red);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .8px;
+      text-transform: uppercase;
+      padding: 5px 14px;
+      border-radius: 20px;
+      margin-bottom: 24px;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--red);
+      border-radius: 50%;
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: .4; transform: scale(.7); }
+    }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 48px);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+
+    h1 em {
+      font-style: normal;
+      color: var(--red);
+    }
+
+    .subtitle {
+      font-size: 16px;
+      color: var(--muted);
+      max-width: 480px;
+      line-height: 1.7;
+      margin-bottom: 48px;
+    }
+
+    /* ── feature cards ── */
+    .cards {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 720px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      width: 200px;
+      text-align: left;
+    }
+
+    .card-icon {
+      font-size: 22px;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .card-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    footer {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 20px;
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡</div>
+  <span>Streamlit Keepalive</span>
+</header>
+
+<main>
+
+  <!-- SVG illustration: browser window with a heartbeat line -->
+  <svg class="illustration" viewBox="0 0 220 160" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <!-- browser chrome -->
+    <rect x="10" y="10" width="200" height="140" rx="10" fill="#1a1d27" stroke="#2a2d3a" stroke-width="1.5"/>
+    <rect x="10" y="10" width="200" height="32" rx="10" fill="#2a2d3a"/>
+    <rect x="10" y="30" width="200" height="12" fill="#2a2d3a"/>
+    <!-- traffic lights -->
+    <circle cx="30" cy="26" r="5" fill="#ff5f57"/>
+    <circle cx="46" cy="26" r="5" fill="#febc2e"/>
+    <circle cx="62" cy="26" r="5" fill="#28c840"/>
+    <!-- address bar -->
+    <rect x="78" y="19" width="112" height="14" rx="4" fill="#0e1117"/>
+    <text x="134" y="30" font-size="7" fill="#7a7f9a" text-anchor="middle" font-family="monospace">streamlit.app</text>
+    <!-- heartbeat line -->
+    <polyline
+      points="20,100 50,100 65,68 75,128 88,100 110,100 122,80 132,118 142,100 200,100"
+      stroke="#ff4b4b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+    >
+      <animate attributeName="stroke-dasharray" from="0 400" to="400 0" dur="2.4s" repeatCount="indefinite"/>
+    </polyline>
+    <!-- pulse dot -->
+    <circle cx="142" cy="100" r="4" fill="#ff4b4b" opacity=".9">
+      <animate attributeName="r" values="4;7;4" dur="2.4s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values=".9;0;.9" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+  </svg>
+
+  <div class="badge">
+    <span class="badge-dot"></span>
+    建设中
+  </div>
+
+  <h1>让你的 <em>Streamlit</em> 应用<br>保持活跃</h1>
+
+  <p class="subtitle">
+    自动定时访问 Streamlit Community Cloud 上的应用，防止因长时间无人访问而进入休眠状态。
+  </p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-icon">🕐</div>
+      <div class="card-title">自管理调度</div>
+      <div class="card-desc">按配置文件的间隔自动循环，无需 cron 或外部调度器</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔍</div>
+      <div class="card-title">两阶段判活</div>
+      <div class="card-desc">HTTP 预检 + 浏览器渲染验证，确认应用真正加载完成</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">💤</div>
+      <div class="card-title">自动唤醒</div>
+      <div class="card-desc">检测到休眠页面时自动点击唤醒按钮并等待恢复</div>
+    </div>
+    <div class="card">
+      <div class="card-icon">📋</div>
+      <div class="card-title">日志 & PID</div>
+      <div class="card-desc">带时间戳的日志文件，PID 文件方便 daemon 管理</div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  Streamlit Keepalive &nbsp;·&nbsp; 更多功能即将上线
+</footer>
+
+</body>
+</html>
