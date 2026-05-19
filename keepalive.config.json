@@ -16,5 +16,9 @@
   "wakeButtonText": "get this app back up",
   "headless": true,
   "randomizeUrlOrder": false,
-  "failOnError": true
+  "failOnError": true,
+  "httpPrecheck": true,
+  "appReadyTimeoutSeconds": 30,
+  "pidFile": "keepalive.pid",
+  "logFile": "keepalive.log"
 }

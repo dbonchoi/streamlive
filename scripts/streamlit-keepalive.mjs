@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -20,10 +21,44 @@ const DEFAULT_CONFIG = {
   headless: true,
   randomizeUrlOrder: false,
   failOnError: true,
-  loop: false
+  loop: false,
+  // daemon options
+  pidFile: '',
+  logFile: '',
+  // liveness check options
+  httpPrecheck: true,
+  appReadyTimeoutSeconds: 30,
 };
 
 const VALID_WAIT_UNTIL = new Set(['load', 'domcontentloaded', 'networkidle', 'commit']);
+
+// ── logging ──────────────────────────────────────────────────────────────────
+
+let logStream = null;
+
+function timestamp() {
+  return new Date().toISOString();
+}
+
+function log(...args) {
+  const line = `[${timestamp()}] ${args.join(' ')}`;
+  console.log(line);
+  logStream?.write(line + '\n');
+}
+
+function logError(...args) {
+  const line = `[${timestamp()}] ${args.join(' ')}`;
+  console.error(line);
+  logStream?.write(line + '\n');
+}
+
+async function openLogFile(logFile) {
+  if (!logFile) return;
+  const { createWriteStream } = await import('node:fs');
+  logStream = createWriteStream(logFile, { flags: 'a' });
+}
+
+// ── help ─────────────────────────────────────────────────────────────────────
 
 function printHelp() {
   console.log(`Usage: npm run keepalive -- [options]
@@ -47,8 +82,14 @@ Options:
   --headful                        Launch Chromium with UI
   --randomize-url-order            Shuffle URL order each round
   --no-fail-on-error               Log failed URLs but exit 0
+  --no-http-precheck               Skip HTTP HEAD precheck before browser visit
+  --app-ready-timeout-seconds <n>  Seconds to wait for app to finish loading (default: 30)
+  --pid-file <path>                Write PID to file (daemon mode)
+  --log-file <path>                Append logs to file
 `);
 }
+
+// ── arg parsing ───────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
   const parsed = {};
@@ -61,13 +102,9 @@ function parseArgs(argv) {
     const inlineValue = equalsIndex >= 0 ? token.slice(equalsIndex + 1) : undefined;
 
     const value = () => {
-      if (inlineValue !== undefined) {
-        return inlineValue;
-      }
+      if (inlineValue !== undefined) return inlineValue;
       index += 1;
-      if (index >= argv.length) {
-        throw new Error(`Missing value for ${name}`);
-      }
+      if (index >= argv.length) throw new Error(`Missing value for ${name}`);
       return argv[index];
     };
 
@@ -112,6 +149,9 @@ function parseArgs(argv) {
       case '--per-url-delay-seconds':
         parsed.perUrlDelaySeconds = parseNumberOption(name, value());
         break;
+      case '--app-ready-timeout-seconds':
+        parsed.appReadyTimeoutSeconds = parseNumberOption(name, value());
+        break;
       case '--selector':
         parsed.selector = value();
         break;
@@ -142,6 +182,18 @@ function parseArgs(argv) {
       case '--no-fail-on-error':
         parsed.failOnError = false;
         break;
+      case '--http-precheck':
+        parsed.httpPrecheck = true;
+        break;
+      case '--no-http-precheck':
+        parsed.httpPrecheck = false;
+        break;
+      case '--pid-file':
+        parsed.pidFile = value();
+        break;
+      case '--log-file':
+        parsed.logFile = value();
+        break;
       default:
         throw new Error(`Unknown option: ${token}`);
     }
@@ -164,95 +216,57 @@ function parseNumberOption(name, rawValue) {
 
 function parseBooleanOption(name, rawValue) {
   const normalized = String(rawValue).trim().toLowerCase();
-  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
-    return true;
-  }
-  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
-    return false;
-  }
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
   throw new Error(`${name} must be true or false`);
 }
 
 function parseUrlList(rawValue) {
   const trimmed = String(rawValue ?? '').trim();
-  if (!trimmed) {
-    return [];
-  }
-
+  if (!trimmed) return [];
   if (trimmed.startsWith('[')) {
     const values = JSON.parse(trimmed);
-    if (!Array.isArray(values)) {
-      throw new Error('URL JSON must be an array');
-    }
+    if (!Array.isArray(values)) throw new Error('URL JSON must be an array');
     return values.map(String).map((url) => url.trim()).filter(Boolean);
   }
-
   return trimmed.split(/[\n,]+/).map((url) => url.trim()).filter(Boolean);
 }
 
+// ── env config ────────────────────────────────────────────────────────────────
+
 function readEnvConfig(env) {
   const config = {};
-
-  if (env.KEEPALIVE_URLS) {
-    config.urls = parseUrlList(env.KEEPALIVE_URLS);
-  }
-  if (env.KEEPALIVE_INTERVAL_MINUTES) {
-    config.intervalMinutes = parseNumberOption('KEEPALIVE_INTERVAL_MINUTES', env.KEEPALIVE_INTERVAL_MINUTES);
-  }
-  if (env.KEEPALIVE_JITTER_MINUTES) {
-    config.jitterMinutes = parseNumberOption('KEEPALIVE_JITTER_MINUTES', env.KEEPALIVE_JITTER_MINUTES);
-  }
-  if (env.KEEPALIVE_HOLD_SECONDS) {
-    config.holdSeconds = parseNumberOption('KEEPALIVE_HOLD_SECONDS', env.KEEPALIVE_HOLD_SECONDS);
-  }
-  if (env.KEEPALIVE_TIMEOUT_SECONDS) {
-    config.timeoutSeconds = parseNumberOption('KEEPALIVE_TIMEOUT_SECONDS', env.KEEPALIVE_TIMEOUT_SECONDS);
-  }
-  if (env.KEEPALIVE_WAKE_TIMEOUT_SECONDS) {
-    config.wakeTimeoutSeconds = parseNumberOption('KEEPALIVE_WAKE_TIMEOUT_SECONDS', env.KEEPALIVE_WAKE_TIMEOUT_SECONDS);
-  }
-  if (env.KEEPALIVE_WAKE_PROBE_SECONDS) {
-    config.wakeProbeSeconds = parseNumberOption('KEEPALIVE_WAKE_PROBE_SECONDS', env.KEEPALIVE_WAKE_PROBE_SECONDS);
-  }
-  if (env.KEEPALIVE_PER_URL_DELAY_SECONDS) {
-    config.perUrlDelaySeconds = parseNumberOption('KEEPALIVE_PER_URL_DELAY_SECONDS', env.KEEPALIVE_PER_URL_DELAY_SECONDS);
-  }
-  if (env.KEEPALIVE_WAIT_UNTIL) {
-    config.waitUntil = env.KEEPALIVE_WAIT_UNTIL;
-  }
-  if (env.KEEPALIVE_SELECTOR !== undefined) {
-    config.selector = env.KEEPALIVE_SELECTOR;
-  }
-  if (env.KEEPALIVE_WAKE_BUTTON_TEXT !== undefined) {
-    config.wakeButtonText = env.KEEPALIVE_WAKE_BUTTON_TEXT;
-  }
-  if (env.KEEPALIVE_WAKE_SLEEPING_APPS !== undefined) {
-    config.wakeSleepingApps = parseBooleanOption('KEEPALIVE_WAKE_SLEEPING_APPS', env.KEEPALIVE_WAKE_SLEEPING_APPS);
-  }
-  if (env.KEEPALIVE_HEADLESS !== undefined) {
-    config.headless = parseBooleanOption('KEEPALIVE_HEADLESS', env.KEEPALIVE_HEADLESS);
-  }
-  if (env.KEEPALIVE_RANDOMIZE_URLS !== undefined) {
-    config.randomizeUrlOrder = parseBooleanOption('KEEPALIVE_RANDOMIZE_URLS', env.KEEPALIVE_RANDOMIZE_URLS);
-  }
-  if (env.KEEPALIVE_FAIL_ON_ERROR !== undefined) {
-    config.failOnError = parseBooleanOption('KEEPALIVE_FAIL_ON_ERROR', env.KEEPALIVE_FAIL_ON_ERROR);
-  }
-  if (env.KEEPALIVE_LOOP !== undefined) {
-    config.loop = parseBooleanOption('KEEPALIVE_LOOP', env.KEEPALIVE_LOOP);
-  }
-
+  if (env.KEEPALIVE_URLS) config.urls = parseUrlList(env.KEEPALIVE_URLS);
+  if (env.KEEPALIVE_INTERVAL_MINUTES) config.intervalMinutes = parseNumberOption('KEEPALIVE_INTERVAL_MINUTES', env.KEEPALIVE_INTERVAL_MINUTES);
+  if (env.KEEPALIVE_JITTER_MINUTES) config.jitterMinutes = parseNumberOption('KEEPALIVE_JITTER_MINUTES', env.KEEPALIVE_JITTER_MINUTES);
+  if (env.KEEPALIVE_HOLD_SECONDS) config.holdSeconds = parseNumberOption('KEEPALIVE_HOLD_SECONDS', env.KEEPALIVE_HOLD_SECONDS);
+  if (env.KEEPALIVE_TIMEOUT_SECONDS) config.timeoutSeconds = parseNumberOption('KEEPALIVE_TIMEOUT_SECONDS', env.KEEPALIVE_TIMEOUT_SECONDS);
+  if (env.KEEPALIVE_WAKE_TIMEOUT_SECONDS) config.wakeTimeoutSeconds = parseNumberOption('KEEPALIVE_WAKE_TIMEOUT_SECONDS', env.KEEPALIVE_WAKE_TIMEOUT_SECONDS);
+  if (env.KEEPALIVE_WAKE_PROBE_SECONDS) config.wakeProbeSeconds = parseNumberOption('KEEPALIVE_WAKE_PROBE_SECONDS', env.KEEPALIVE_WAKE_PROBE_SECONDS);
+  if (env.KEEPALIVE_PER_URL_DELAY_SECONDS) config.perUrlDelaySeconds = parseNumberOption('KEEPALIVE_PER_URL_DELAY_SECONDS', env.KEEPALIVE_PER_URL_DELAY_SECONDS);
+  if (env.KEEPALIVE_APP_READY_TIMEOUT_SECONDS) config.appReadyTimeoutSeconds = parseNumberOption('KEEPALIVE_APP_READY_TIMEOUT_SECONDS', env.KEEPALIVE_APP_READY_TIMEOUT_SECONDS);
+  if (env.KEEPALIVE_WAIT_UNTIL) config.waitUntil = env.KEEPALIVE_WAIT_UNTIL;
+  if (env.KEEPALIVE_SELECTOR !== undefined) config.selector = env.KEEPALIVE_SELECTOR;
+  if (env.KEEPALIVE_WAKE_BUTTON_TEXT !== undefined) config.wakeButtonText = env.KEEPALIVE_WAKE_BUTTON_TEXT;
+  if (env.KEEPALIVE_WAKE_SLEEPING_APPS !== undefined) config.wakeSleepingApps = parseBooleanOption('KEEPALIVE_WAKE_SLEEPING_APPS', env.KEEPALIVE_WAKE_SLEEPING_APPS);
+  if (env.KEEPALIVE_HEADLESS !== undefined) config.headless = parseBooleanOption('KEEPALIVE_HEADLESS', env.KEEPALIVE_HEADLESS);
+  if (env.KEEPALIVE_RANDOMIZE_URLS !== undefined) config.randomizeUrlOrder = parseBooleanOption('KEEPALIVE_RANDOMIZE_URLS', env.KEEPALIVE_RANDOMIZE_URLS);
+  if (env.KEEPALIVE_FAIL_ON_ERROR !== undefined) config.failOnError = parseBooleanOption('KEEPALIVE_FAIL_ON_ERROR', env.KEEPALIVE_FAIL_ON_ERROR);
+  if (env.KEEPALIVE_LOOP !== undefined) config.loop = parseBooleanOption('KEEPALIVE_LOOP', env.KEEPALIVE_LOOP);
+  if (env.KEEPALIVE_HTTP_PRECHECK !== undefined) config.httpPrecheck = parseBooleanOption('KEEPALIVE_HTTP_PRECHECK', env.KEEPALIVE_HTTP_PRECHECK);
+  if (env.KEEPALIVE_PID_FILE) config.pidFile = env.KEEPALIVE_PID_FILE;
+  if (env.KEEPALIVE_LOG_FILE) config.logFile = env.KEEPALIVE_LOG_FILE;
   return config;
 }
+
+// ── file config ───────────────────────────────────────────────────────────────
 
 async function readFileConfig(configPath, isExplicit) {
   try {
     const content = await readFile(configPath, 'utf8');
     return JSON.parse(content);
   } catch (error) {
-    if (error.code === 'ENOENT' && !isExplicit) {
-      return {};
-    }
+    if (error.code === 'ENOENT' && !isExplicit) return {};
     throw new Error(`Failed to read config ${configPath}: ${error.message}`);
   }
 }
@@ -267,15 +281,13 @@ function normalizeConfig(config) {
     throw new Error('No URLs configured. Set urls in keepalive.config.json or KEEPALIVE_URLS.');
   }
 
-  for (const url of normalized.urls) {
-    validateHttpUrl(url);
-  }
+  for (const url of normalized.urls) validateHttpUrl(url);
 
   if (!VALID_WAIT_UNTIL.has(normalized.waitUntil)) {
     throw new Error(`waitUntil must be one of: ${[...VALID_WAIT_UNTIL].join(', ')}`);
   }
 
-  for (const key of ['intervalMinutes', 'jitterMinutes', 'holdSeconds', 'timeoutSeconds', 'wakeTimeoutSeconds', 'wakeProbeSeconds', 'perUrlDelaySeconds']) {
+  for (const key of ['intervalMinutes', 'jitterMinutes', 'holdSeconds', 'timeoutSeconds', 'wakeTimeoutSeconds', 'wakeProbeSeconds', 'perUrlDelaySeconds', 'appReadyTimeoutSeconds']) {
     if (!Number.isFinite(Number(normalized[key])) || Number(normalized[key]) < 0) {
       throw new Error(`${key} must be a non-negative number`);
     }
@@ -289,6 +301,9 @@ function normalizeConfig(config) {
   normalized.randomizeUrlOrder = Boolean(normalized.randomizeUrlOrder);
   normalized.failOnError = Boolean(normalized.failOnError);
   normalized.loop = Boolean(normalized.loop);
+  normalized.httpPrecheck = Boolean(normalized.httpPrecheck);
+  normalized.pidFile = normalized.pidFile ? String(normalized.pidFile) : '';
+  normalized.logFile = normalized.logFile ? String(normalized.logFile) : '';
 
   return normalized;
 }
@@ -304,6 +319,8 @@ function validateHttpUrl(rawUrl) {
     throw new Error(`URL must use http or https: ${rawUrl}`);
   }
 }
+
+// ── utilities ─────────────────────────────────────────────────────────────────
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -323,9 +340,7 @@ function shuffle(values) {
 }
 
 function randomDelayMs(maxMinutes) {
-  if (maxMinutes <= 0) {
-    return 0;
-  }
+  if (maxMinutes <= 0) return 0;
   return Math.floor(Math.random() * maxMinutes * 60 * 1000);
 }
 
@@ -334,121 +349,167 @@ function formatSeconds(ms) {
 }
 
 async function sleepWithLog(label, ms) {
-  if (ms <= 0) {
-    return;
-  }
-  console.log(`${label}: waiting ${formatSeconds(ms)}s`);
+  if (ms <= 0) return;
+  log(`${label}: waiting ${formatSeconds(ms)}s`);
   await sleep(ms);
 }
+
+// ── HTTP precheck ─────────────────────────────────────────────────────────────
+
+async function httpPrecheck(rawUrl, timeoutSeconds) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+  try {
+    const res = await fetch(rawUrl, {
+      method: 'HEAD',
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    return { reachable: true, status: res.status };
+  } catch (error) {
+    return { reachable: false, error: error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── liveness detection ────────────────────────────────────────────────────────
 
 function getWakeButtonLocator(page, config) {
   const wakeButtonPattern = new RegExp(escapeRegExp(config.wakeButtonText), 'i');
   const roleButton = page.getByRole('button', { name: wakeButtonPattern });
   const textButton = page.locator('button').filter({ hasText: wakeButtonPattern });
   const roleTextButton = page.locator('[role="button"]').filter({ hasText: wakeButtonPattern });
-
   return roleButton.or(textButton).or(roleTextButton).first();
 }
 
 async function clickWakeButtonIfPresent(page, rawUrl, config, index, total, probeTimeoutMs = config.wakeProbeSeconds * 1000) {
-  if (!config.wakeSleepingApps || !config.wakeButtonText || config.wakeProbeSeconds <= 0) {
-    return false;
-  }
+  if (!config.wakeSleepingApps || !config.wakeButtonText || config.wakeProbeSeconds <= 0) return false;
 
   const wakeButton = getWakeButtonLocator(page, config);
-
   try {
-    await wakeButton.waitFor({
-      state: 'visible',
-      timeout: probeTimeoutMs
-    });
+    await wakeButton.waitFor({ state: 'visible', timeout: probeTimeoutMs });
   } catch {
     return false;
   }
 
-  console.log(`[${index}/${total}] wake sleeping app ${rawUrl}`);
-  await wakeButton.click({
-    timeout: Math.min(config.timeoutSeconds, config.wakeTimeoutSeconds) * 1000
-  });
+  log(`[${index}/${total}] wake sleeping app ${rawUrl}`);
+  await wakeButton.click({ timeout: Math.min(config.timeoutSeconds, config.wakeTimeoutSeconds) * 1000 });
   return true;
 }
 
-async function waitForAppSelector(page, rawUrl, config, index, total) {
+// Wait for the Streamlit app to be truly ready:
+// 1. The app container selector must appear
+// 2. Any active stSpinner / stStatusWidget "running" state must clear
+async function waitForAppReady(page, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
   const wakeTimeoutMs = config.wakeTimeoutSeconds * 1000;
+  const appReadyMs = config.appReadyTimeoutSeconds * 1000;
+
   let wokeSleepingApp = await clickWakeButtonIfPresent(page, rawUrl, config, index, total);
   let deadline = Date.now() + (wokeSleepingApp ? wakeTimeoutMs : timeoutMs);
 
+  // Phase 1: wait for app container to appear
   while (Date.now() < deadline) {
     const remainingMs = deadline - Date.now();
     const selectorProbeMs = Math.min(remainingMs, 5000);
 
     try {
-      await page.waitForSelector(config.selector, {
-        state: 'attached',
-        timeout: selectorProbeMs
-      });
-      return wokeSleepingApp;
-    } catch (error) {
-      if (!isTimeoutError(error)) {
-        throw error;
-      }
-    }
-
-    const remainingAfterSelectorMs = deadline - Date.now();
-    if (remainingAfterSelectorMs <= 0) {
+      await page.waitForSelector(config.selector, { state: 'attached', timeout: selectorProbeMs });
       break;
+    } catch (error) {
+      if (!isTimeoutError(error)) throw error;
     }
 
-    const clickedWakeButton = await clickWakeButtonIfPresent(
-      page,
-      rawUrl,
-      config,
-      index,
-      total,
-      Math.min(remainingAfterSelectorMs, config.wakeProbeSeconds * 1000)
-    );
+    const remainingAfterMs = deadline - Date.now();
+    if (remainingAfterMs <= 0) {
+      const title = await page.title().catch(() => '');
+      throw new Error(`Timed out waiting for app container at ${page.url()}${title ? ` (title: ${title})` : ''}`);
+    }
 
-    if (clickedWakeButton) {
+    const clicked = await clickWakeButtonIfPresent(
+      page, rawUrl, config, index, total,
+      Math.min(remainingAfterMs, config.wakeProbeSeconds * 1000)
+    );
+    if (clicked) {
       wokeSleepingApp = true;
       deadline = Date.now() + wakeTimeoutMs;
     }
   }
 
-  const title = await page.title().catch(() => '');
-  throw new Error(`Timed out waiting for ${config.selector} at ${page.url()}${title ? ` (title: ${title})` : ''}`);
+  // Phase 2: wait for spinners to clear (app actually finished loading)
+  if (appReadyMs > 0) {
+    const spinnerSelector = '[data-testid="stSpinner"], [data-testid="stStatusWidget"] [aria-label="Running"]';
+    const appReadyDeadline = Date.now() + appReadyMs;
+
+    try {
+      // If no spinner is present at all, we're already done
+      const spinnerHandle = await page.$(spinnerSelector);
+      if (spinnerHandle) {
+        log(`[${index}/${total}] app loading, waiting for spinner to clear`);
+        await page.waitForSelector(spinnerSelector, {
+          state: 'detached',
+          timeout: Math.max(0, appReadyDeadline - Date.now()),
+        });
+      }
+    } catch (error) {
+      // Spinner timeout is non-fatal: app container is present, just log it
+      if (isTimeoutError(error)) {
+        log(`[${index}/${total}] warning: spinner still visible after ${config.appReadyTimeoutSeconds}s, proceeding anyway`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return wokeSleepingApp;
 }
+
+// ── visit ─────────────────────────────────────────────────────────────────────
 
 async function visitUrl(browser, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
-  const page = await browser.newPage();
   const startedAt = Date.now();
 
+  // HTTP precheck: fast-fail unreachable hosts before launching a browser page
+  if (config.httpPrecheck) {
+    const check = await httpPrecheck(rawUrl, Math.min(config.timeoutSeconds, 15));
+    if (!check.reachable) {
+      logError(`[${index}/${total}] precheck failed ${rawUrl}: ${check.error}`);
+      return { url: rawUrl, ok: false, error: new Error(check.error) };
+    }
+    if (check.status >= 500) {
+      logError(`[${index}/${total}] precheck HTTP ${check.status} ${rawUrl}`);
+      return { url: rawUrl, ok: false, error: new Error(`HTTP ${check.status}`) };
+    }
+    // 4xx on HEAD is normal for Streamlit (it may redirect or require JS), continue
+  }
+
+  const page = await browser.newPage();
   try {
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
 
-    console.log(`[${index}/${total}] open ${rawUrl}`);
-    await page.goto(rawUrl, {
-      waitUntil: config.waitUntil,
-      timeout: timeoutMs
-    });
+    log(`[${index}/${total}] open ${rawUrl}`);
+    await page.goto(rawUrl, { waitUntil: config.waitUntil, timeout: timeoutMs });
 
     if (config.selector) {
-      await waitForAppSelector(page, rawUrl, config, index, total);
+      await waitForAppReady(page, rawUrl, config, index, total);
     }
 
     await sleepWithLog(`[${index}/${total}] hold ${rawUrl}`, config.holdSeconds * 1000);
 
-    console.log(`[${index}/${total}] ok ${rawUrl} (${formatSeconds(Date.now() - startedAt)}s)`);
+    log(`[${index}/${total}] ok ${rawUrl} (${formatSeconds(Date.now() - startedAt)}s)`);
     return { url: rawUrl, ok: true };
   } catch (error) {
-    console.error(`[${index}/${total}] failed ${rawUrl}: ${error.message}`);
+    logError(`[${index}/${total}] failed ${rawUrl}: ${error.message}`);
     return { url: rawUrl, ok: false, error };
   } finally {
     await page.close().catch(() => {});
   }
 }
+
+// ── round ─────────────────────────────────────────────────────────────────────
 
 async function runRound(config) {
   const { chromium } = await import('playwright');
@@ -458,19 +519,71 @@ async function runRound(config) {
 
   try {
     for (let index = 0; index < urls.length; index += 1) {
-      if (index > 0) {
-        await sleepWithLog('between URLs', config.perUrlDelaySeconds * 1000);
-      }
+      if (index > 0) await sleepWithLog('between URLs', config.perUrlDelaySeconds * 1000);
       results.push(await visitUrl(browser, urls[index], config, index + 1, urls.length));
     }
   } finally {
     await browser.close();
   }
 
-  const failures = results.filter((result) => !result.ok);
-  console.log(`round done: ${results.length - failures.length}/${results.length} succeeded`);
+  const failures = results.filter((r) => !r.ok);
+  log(`round done: ${results.length - failures.length}/${results.length} succeeded`);
   return failures;
 }
+
+// ── daemon / PID ──────────────────────────────────────────────────────────────
+
+async function writePidFile(pidFile) {
+  if (!pidFile) return;
+  await writeFile(pidFile, String(process.pid), 'utf8');
+  log(`PID ${process.pid} written to ${pidFile}`);
+}
+
+async function removePidFile(pidFile) {
+  if (!pidFile || !existsSync(pidFile)) return;
+  await unlink(pidFile).catch(() => {});
+}
+
+// ── signal handling ───────────────────────────────────────────────────────────
+
+let shuttingDown = false;
+let currentSleepAbort = null;
+
+function setupSignals(pidFile) {
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`received ${signal}, shutting down`);
+    currentSleepAbort?.abort();
+    await removePidFile(pidFile);
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // SIGHUP: reload config on next round (Unix only)
+  if (process.platform !== 'win32') {
+    process.on('SIGHUP', () => {
+      log('received SIGHUP, config will reload on next round');
+    });
+  }
+}
+
+// Interruptible sleep that respects shutdown signal
+async function interruptibleSleep(ms) {
+  const controller = new AbortController();
+  currentSleepAbort = controller;
+  try {
+    await sleep(ms, undefined, { signal: controller.signal });
+  } catch {
+    // aborted by shutdown
+  } finally {
+    currentSleepAbort = null;
+  }
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -482,36 +595,50 @@ async function main() {
   const envConfig = readEnvConfig(process.env);
   const configPath = args.configPath ?? process.env.KEEPALIVE_CONFIG ?? 'keepalive.config.json';
   const fileConfig = await readFileConfig(configPath, Boolean(args.configPath ?? process.env.KEEPALIVE_CONFIG));
-  const config = normalizeConfig({
-    ...DEFAULT_CONFIG,
-    ...fileConfig,
-    ...envConfig,
-    ...args
-  });
+  const config = normalizeConfig({ ...DEFAULT_CONFIG, ...fileConfig, ...envConfig, ...args });
 
-  console.log(`configured URLs: ${config.urls.length}`);
-  console.log(`timing: interval=${config.intervalMinutes}m jitter=0-${config.jitterMinutes}m hold=${config.holdSeconds}s timeout=${config.timeoutSeconds}s wakeTimeout=${config.wakeTimeoutSeconds}s`);
+  await openLogFile(config.logFile);
+  await writePidFile(config.pidFile);
+  setupSignals(config.pidFile);
+
+  log(`configured URLs: ${config.urls.length}`);
+  log(`timing: interval=${config.intervalMinutes}m jitter=0-${config.jitterMinutes}m hold=${config.holdSeconds}s timeout=${config.timeoutSeconds}s wakeTimeout=${config.wakeTimeoutSeconds}s`);
+  log(`liveness: httpPrecheck=${config.httpPrecheck} appReadyTimeout=${config.appReadyTimeoutSeconds}s`);
 
   if (!config.loop) {
     await sleepWithLog('startup jitter', randomDelayMs(config.jitterMinutes));
     const failures = await runRound(config);
-    if (failures.length > 0 && config.failOnError) {
-      process.exitCode = 1;
-    }
+    if (failures.length > 0 && config.failOnError) process.exitCode = 1;
+    await removePidFile(config.pidFile);
     return;
   }
 
-  while (true) {
-    const failures = await runRound(config);
-    if (failures.length > 0 && config.failOnError) {
-      console.error(`round had ${failures.length} failed URL(s); continuing because --loop is enabled`);
+  // Loop mode: reload config from file each round so changes take effect without restart
+  let roundNumber = 0;
+  while (!shuttingDown) {
+    roundNumber += 1;
+    log(`--- round ${roundNumber} ---`);
+
+    // Reload file config each round (hot reload)
+    const freshFileConfig = await readFileConfig(configPath, Boolean(args.configPath ?? process.env.KEEPALIVE_CONFIG));
+    const roundConfig = normalizeConfig({ ...DEFAULT_CONFIG, ...freshFileConfig, ...envConfig, ...args });
+
+    const failures = await runRound(roundConfig);
+    if (failures.length > 0 && roundConfig.failOnError) {
+      logError(`round had ${failures.length} failed URL(s); continuing`);
     }
-    const intervalMs = config.intervalMinutes * 60 * 1000;
-    await sleepWithLog('next round', intervalMs + randomDelayMs(config.jitterMinutes));
+
+    if (shuttingDown) break;
+
+    const intervalMs = roundConfig.intervalMinutes * 60 * 1000;
+    const jitterMs = randomDelayMs(roundConfig.jitterMinutes);
+    await sleepWithLog('next round', intervalMs + jitterMs);
   }
+
+  await removePidFile(config.pidFile);
 }
 
 main().catch((error) => {
-  console.error(error.message);
+  logError(error.message);
   process.exitCode = 1;
 });
