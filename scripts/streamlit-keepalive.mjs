@@ -398,8 +398,22 @@ async function clickWakeButtonIfPresent(page, rawUrl, config, index, total, prob
   return true;
 }
 
+// Streamlit Community Cloud wraps apps in an <iframe name="streamlitApp">,
+// so the app container lives in a child frame, not the main document.
+async function findFrameWithSelector(page, selector) {
+  for (const frame of page.frames()) {
+    try {
+      const handle = await frame.$(selector);
+      if (handle) return frame;
+    } catch {
+      // Frame may have detached during navigation; ignore and continue.
+    }
+  }
+  return null;
+}
+
 // Wait for the Streamlit app to be truly ready:
-// 1. The app container selector must appear
+// 1. The app container selector must appear (in the main page or any iframe)
 // 2. Any active stSpinner / stStatusWidget "running" state must clear
 async function waitForAppReady(page, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
@@ -409,45 +423,43 @@ async function waitForAppReady(page, rawUrl, config, index, total) {
   let wokeSleepingApp = await clickWakeButtonIfPresent(page, rawUrl, config, index, total);
   let deadline = Date.now() + (wokeSleepingApp ? wakeTimeoutMs : timeoutMs);
 
-  // Phase 1: wait for app container to appear
+  // Phase 1: wait for app container to appear in any frame
+  let appFrame = null;
   while (Date.now() < deadline) {
+    appFrame = await findFrameWithSelector(page, config.selector);
+    if (appFrame) break;
+
     const remainingMs = deadline - Date.now();
-    const selectorProbeMs = Math.min(remainingMs, 5000);
-
-    try {
-      await page.waitForSelector(config.selector, { state: 'attached', timeout: selectorProbeMs });
-      break;
-    } catch (error) {
-      if (!isTimeoutError(error)) throw error;
-    }
-
-    const remainingAfterMs = deadline - Date.now();
-    if (remainingAfterMs <= 0) {
-      const title = await page.title().catch(() => '');
-      throw new Error(`Timed out waiting for app container at ${page.url()}${title ? ` (title: ${title})` : ''}`);
-    }
+    if (remainingMs <= 0) break;
 
     const clicked = await clickWakeButtonIfPresent(
       page, rawUrl, config, index, total,
-      Math.min(remainingAfterMs, config.wakeProbeSeconds * 1000)
+      Math.min(remainingMs, config.wakeProbeSeconds * 1000)
     );
     if (clicked) {
       wokeSleepingApp = true;
       deadline = Date.now() + wakeTimeoutMs;
+      continue;
     }
+
+    await sleep(Math.min(500, Math.max(0, deadline - Date.now())));
   }
 
-  // Phase 2: wait for spinners to clear (app actually finished loading)
+  if (!appFrame) {
+    const title = await page.title().catch(() => '');
+    throw new Error(`Timed out waiting for app container at ${page.url()}${title ? ` (title: ${title})` : ''}`);
+  }
+
+  // Phase 2: wait for spinners to clear in the same frame as the app container
   if (appReadyMs > 0) {
     const spinnerSelector = '[data-testid="stSpinner"], [data-testid="stStatusWidget"] [aria-label="Running"]';
     const appReadyDeadline = Date.now() + appReadyMs;
 
     try {
-      // If no spinner is present at all, we're already done
-      const spinnerHandle = await page.$(spinnerSelector);
+      const spinnerHandle = await appFrame.$(spinnerSelector);
       if (spinnerHandle) {
         log(`[${index}/${total}] app loading, waiting for spinner to clear`);
-        await page.waitForSelector(spinnerSelector, {
+        await appFrame.waitForSelector(spinnerSelector, {
           state: 'detached',
           timeout: Math.max(0, appReadyDeadline - Date.now()),
         });
