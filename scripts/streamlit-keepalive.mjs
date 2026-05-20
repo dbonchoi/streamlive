@@ -483,16 +483,15 @@ async function visitUrl(browser, rawUrl, config, index, total) {
   const timeoutMs = config.timeoutSeconds * 1000;
   const startedAt = Date.now();
 
-  // HTTP precheck: fast-fail unreachable hosts before launching a browser page
+  // HTTP precheck: warn on unreachable hosts but still let the browser try.
+  // Some networks block or mangle HEAD requests even when the browser can
+  // load the page fine, so a precheck failure is advisory, not fatal.
   if (config.httpPrecheck) {
     const check = await httpPrecheck(rawUrl, Math.min(config.timeoutSeconds, 15));
     if (!check.reachable) {
-      logError(`[${index}/${total}] precheck failed ${rawUrl}: ${check.error}`);
-      return { url: rawUrl, ok: false, error: new Error(check.error) };
-    }
-    if (check.status >= 500) {
-      logError(`[${index}/${total}] precheck HTTP ${check.status} ${rawUrl}`);
-      return { url: rawUrl, ok: false, error: new Error(`HTTP ${check.status}`) };
+      log(`[${index}/${total}] precheck warning ${rawUrl}: ${check.error} (continuing with browser)`);
+    } else if (check.status >= 500) {
+      log(`[${index}/${total}] precheck warning ${rawUrl}: HTTP ${check.status} (continuing with browser)`);
     }
     // 4xx on HEAD is normal for Streamlit (it may redirect or require JS), continue
   }
