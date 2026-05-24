@@ -1,0 +1,48 @@
+# Streamlit Keepalive - GitLab CI/CD equivalent of .github/workflows/keepalive.yml
+#
+# Cron schedule (GitHub: 0 */1 * * *) is configured via:
+#   GitLab > Build > Pipeline schedules > New schedule (cron: "0 */1 * * *")
+#
+# Manual run with optional URL override (GitHub: workflow_dispatch inputs.urls):
+#   GitLab > Build > Pipelines > Run pipeline > add variable DISPATCH_URLS
+
+default:
+  image: node:20
+  timeout: 20 minutes
+
+variables:
+  KEEPALIVE_CONFIG: "keepalive.config.json"
+  # Redirect Playwright browser cache into the project dir so GitLab can cache it.
+  PLAYWRIGHT_BROWSERS_PATH: "$CI_PROJECT_DIR/.cache/ms-playwright"
+  DISPATCH_URLS:
+    description: "Optional comma/newline separated URLs. Overrides keepalive.config.json for this run."
+    value: ""
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+
+stages:
+  - keepalive
+
+ping:
+  stage: keepalive
+  resource_group: streamlit-keepalive
+  cache:
+    key:
+      files:
+        - package.json
+      prefix: playwright-linux
+    paths:
+      - .cache/ms-playwright/
+  script:
+    - npm install --no-package-lock
+    - npx playwright install chromium --with-deps
+    - |
+      if [ -n "$DISPATCH_URLS" ]; then
+        npm run keepalive -- --urls "$DISPATCH_URLS"
+      else
+        npm run keepalive
+      fi
